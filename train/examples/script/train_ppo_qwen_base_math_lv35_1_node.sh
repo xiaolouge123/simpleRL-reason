@@ -1,25 +1,25 @@
-
-HDFS_HOME=TO_BE_DEFINED
+HDFS_HOME=/data/true_nas/zfs_share1/zyc/exprs
+PRETRAIN_MODEL_PATH=/data/true_nas/zfs_share1/zyc/data/models/Qwen/Qwen2.5-1.5B
 RUN_NAME=Qwen2.5-Math-7B_ppo_from_base_math_lv35
 
 python3 openrlhf/cli/train_ppo_ray_box.py \
     --ref_num_nodes 1 \
-    --ref_num_gpus_per_node 2 \
+    --ref_num_gpus_per_node 1 \
     --reward_num_nodes 0 \
     --reward_num_gpus_per_node 0 \
     --critic_num_nodes 1 \
-    --critic_num_gpus_per_node 2 \
+    --critic_num_gpus_per_node 1 \
     --actor_num_nodes 1 \
-    --actor_num_gpus_per_node 2 \
-    --vllm_num_engines 2 \
+    --actor_num_gpus_per_node 1 \
+    --vllm_num_engines 1 \
     --vllm_tensor_parallel_size 1 \
     --colocate_actor_ref \
-    --pretrain $HDFS_HOME/model_hub/models--Qwen--Qwen2.5-Math-7B/snapshots/b101308fe89651ea5ce025f25317fea6fc07e96e \
+    --pretrain $PRETRAIN_MODEL_PATH \
     --save_path $HDFS_HOME/checkpoints/$RUN_NAME \
-    --micro_train_batch_size 2 \
-    --train_batch_size 128 \
-    --micro_rollout_batch_size 2 \
-    --rollout_batch_size 1024 \
+    --micro_train_batch_size 1 \
+    --train_batch_size 64 \
+    --micro_rollout_batch_size 1 \
+    --rollout_batch_size 512 \
     --temperature 0.6 \
     --n_samples_per_prompt 8 \
     --max_samples 100000 \
@@ -40,7 +40,6 @@ python3 openrlhf/cli/train_ppo_ray_box.py \
     --gradient_checkpointing \
     --save_steps 4 \
     --load_checkpoint \
-    --use_wandb YOUR_WANDB_KEY \
-    --wandb_run_name $RUN_NAME \
+    --use_tensorboard $HDFS_HOME/tensorboard/$RUN_NAME \
     --ckpt_path $HDFS_HOME/checkpoints/$RUN_NAME  \
     --max_ckpt_num 20000
