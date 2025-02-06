@@ -10,7 +10,7 @@ from openrlhf.utils.logging_utils import init_logger
 logger = init_logger(__name__)
 
 
-@ray.remote
+@ray.remote(num_gpus=1)
 class LLMRayActor:
     def __init__(self, *args, **kwargs):
         import vllm
@@ -118,6 +118,7 @@ def create_vllm_engines(
 
 
 if __name__ == "__main__":
-    llm = LLMRayActor.remote("meta-llama/Llama-2-7b-chat-hf", tensor_parallel_size=4)
+    # llm = LLMRayActor.remote("meta-llama/Llama-2-7b-chat-hf", tensor_parallel_size=4)
+    llm = LLMRayActor.remote("/data/true_nas/zfs_share1/zyc/data/models/openbmb/MiniCPM-V-2_6", tensor_parallel_size=1, trust_remote_code=True)
     output = ray.get(llm.generate.remote("San Franciso is a"))
     print(f"output: {output}")
