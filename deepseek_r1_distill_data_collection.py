@@ -3,6 +3,10 @@ import json
 import argparse
 import random
 import time
+import signal  # new import to allow terminating the process group
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def get_deepseek_r1_response_deepseek(prompt, stream=False):
@@ -141,37 +145,52 @@ def get_engine(active_engine_list, engine2last_failure):
             cnt = 0
 
 
-def round_robin_call(data, engine_list, output_data_path):
+def round_robin_call(prompt_dict, engine_list, output_data_path, failure_counter, failure_lock):
+    """
+    This function calls one of the engine functions.
+    On success, it resets the global failure counter.
+    On failure, it increments the counter and if it reaches 100, exits the program.
+    """
     active_engine_list = engine_list.split(",")
     engine2last_failure = {}
     for engine in active_engine_list:
         engine2last_failure[engine] = {"timestamp": None}
 
-    for d in data:
-        prompt = d["prompt"]
-        reasoning_content = ""
-        content = ""
-        engine = get_engine(active_engine_list, engine2last_failure)
-        try:
-            reasoning_content, content = engine2func[engine](prompt)
-            d["reasoning_content"] = reasoning_content
-            d["content"] = content
-            d["engine"] = engine
-            with open(output_data_path, "a") as f:
-                f.write(json.dumps(d, ensure_ascii=False) + "\n")
-
-            engine2last_failure[engine]["timestamp"] = None
-        except Exception as e:
-            engine2last_failure[engine]["timestamp"] = time.time()
-            print(f"Error: {e}")
-            print(f"Failed to call {engine}.")
+    # print("data content: ", prompt_dict)
+    prompt = prompt_dict["prompt"]
+    reasoning_content = ""
+    content = ""
+    engine = get_engine(active_engine_list, engine2last_failure)
+    try:
+        reasoning_content, content = engine2func[engine](prompt)
+        prompt_dict["reasoning_content"] = reasoning_content
+        prompt_dict["content"] = content
+        prompt_dict["engine"] = engine
+        with open(output_data_path, "a") as f:
+            f.write(json.dumps(prompt_dict, ensure_ascii=False) + "\n")
+        # On a successful call, reset the global failure counter
+        with failure_lock:
+            failure_counter.value = 0
+        engine2last_failure[engine]["timestamp"] = None
+    except Exception as e:
+        with failure_lock:
+            failure_counter.value += 1
+            current_failures = failure_counter.value
+        print(f"Error: {e}")
+        print(f"Failed to call {engine}. Consecutive failures: {current_failures}")
+        # If failure count reaches 100, terminate all processes in the current process group.
+        with failure_lock:
+            if failure_counter.value >= 100:
+                print("Engine call failed 100 times in sequence, exiting program.")
+                os.killpg(os.getpgrp(), signal.SIGTERM)
+        engine2last_failure[engine]["timestamp"] = time.time()
 
 
 def load_data(file_path):
     data = []
     with open(file_path, "r") as f:
         for line in f:
-            data.append(line.strip())
+            data.append(json.loads(line.strip()))
     return data
 
 
@@ -190,36 +209,53 @@ def main():
     prompt_data = load_data(args.prompt_data_path)
     if os.path.exists(args.output_data_path):
         output_data = load_data(args.output_data_path)
+        already_called_ids = [item["step_index"] for item in output_data]
     else:
         output_data = []
-    already_called_ids = [item["id"] for item in output_data]
+        already_called_ids = []
     print(f"already called {len(already_called_ids)} prompts")
-    prompt_data = [item for item in prompt_data if item["id"] not in already_called_ids]
+    prompt_data = [item for item in prompt_data if item["step_index"] not in already_called_ids]
+    random.shuffle(prompt_data)
     print(f"remaining {len(prompt_data)} prompts")
+    # print("prompt_data content: ", prompt_data[0])
+    
+    from multiprocessing import Process, Value, Lock
 
-    from multiprocessing import Process
+    # Create a global shared failure counter and lock.
+    failure_counter = Value('i', 0)
+    failure_lock = Lock()
 
-    def process_chunk(prompts, engine_list, output_data_path):
-        for prompt in prompts:
-            round_robin_call(prompt, engine_list, output_data_path)
+    def process_chunk(prompts, engine_list, output_data_path, failure_counter, failure_lock):
+        """
+        Process a chunk of prompt tasks.
+        Before each call, we check the global failure counter.
+        A progress bar is displayed for the prompts in this chunk.
+        """
+        from tqdm import tqdm
+        for prompt_dict in tqdm(prompts, desc="Processing prompts", leave=True):
+            with failure_lock:
+                if failure_counter.value >= 100:
+                    print("Exiting due to 100 consecutive failures.")
+                    os.killpg(os.getpgrp(), signal.SIGTERM)
+            round_robin_call(prompt_dict, engine_list, output_data_path, failure_counter, failure_lock)
 
-    # 将数据分成8份(可以根据需要调整进程数)
-    num_processes = 2
+    # Split the data into chunks (adjust number of processes as needed)
+    num_processes = 10
     chunk_size = len(prompt_data) // num_processes
     chunks = [
         prompt_data[i : i + chunk_size] for i in range(0, len(prompt_data), chunk_size)
     ]
 
-    # 创建并启动多个进程
     processes = []
     for chunk in chunks:
         p = Process(
-            target=process_chunk, args=(chunk, args.engine_list, args.output_data_path)
+            target=process_chunk,
+            args=(chunk, args.engine_list, args.output_data_path, failure_counter, failure_lock)
         )
         p.start()
         processes.append(p)
 
-    # 等待所有进程完成
+    # Wait for all processes to finish
     for p in processes:
         p.join()
 
